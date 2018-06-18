@@ -3,6 +3,9 @@ name = "server"
 version = "0.1.0"
 authors = ["ForsakenHarmony <ulliftw@gmail.com>"]
 
+[target.heroku]
+version = "nightly"
+
 [dependencies]
 juniper = { git = "https://github.com/ForsakenHarmony/juniper.git", features = ["nightly"] }
 juniper_iron = { git = "https://github.com/ForsakenHarmony/juniper.git" }
