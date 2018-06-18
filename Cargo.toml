@@ -1,0 +1,14 @@
+[package]
+name = "server"
+version = "0.1.0"
+authors = ["ForsakenHarmony <ulliftw@gmail.com>"]
+
+[dependencies]
+juniper = { path = "../juniper/juniper", features = ["nightly"] }
+juniper_rocket = { path = "../juniper/juniper_rocket"}
+rocket = "0.3"
+rocket_codegen = "0.3"
+dotenv = "0.13"
+diesel = { version = "1.3", features = ["postgres"] }
+r2d2 = "0.8"
+r2d2-diesel = "1.0"
