@@ -1,1 +1,1 @@
-web: target/release/rust-graphql-server
+web: ./target/release/rust-graphql-server
