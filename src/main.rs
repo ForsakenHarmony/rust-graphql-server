@@ -107,20 +107,6 @@ impl Mutation<Context=Context> {
   }
 }
 
-//fn publish_post(executor: &Executor<Context>, id: i32) -> FieldResult<Post> {
-//  use schema::posts::dsl::{posts, published};
-//
-//  let conn = executor.context().pool.get()?;
-//
-//  let res = diesel::update(posts.find(id))
-//      .set(published.eq(true))
-//      .get_result(&*conn)?;
-//
-//  Ok(res)
-//}
-
-//type Schema = RootNode<'static, Query, Mutation>;
-
 pub fn create_connection_pool() -> Pool<ConnectionManager<PgConnection>> {
   dotenv().ok();
 

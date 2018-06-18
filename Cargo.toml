@@ -4,8 +4,8 @@ version = "0.1.0"
 authors = ["ForsakenHarmony <ulliftw@gmail.com>"]
 
 [dependencies]
-juniper = { path = "../juniper/juniper", features = ["nightly"] }
-juniper_iron = { path = "../juniper/juniper_iron"}
+juniper = { git = "https://github.com/ForsakenHarmony/juniper.git", features = ["nightly"] }
+juniper_iron = { git = "https://github.com/ForsakenHarmony/juniper.git" }
 dotenv = "0.13"
 diesel = { version = "1.3", features = ["postgres"] }
 r2d2 = "0.8"
