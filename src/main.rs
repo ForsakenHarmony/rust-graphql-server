@@ -2,32 +2,31 @@
 
 #[macro_use]
 extern crate juniper;
-extern crate iron;
-extern crate juniper_iron;
 extern crate logger;
-extern crate mount;
 #[macro_use]
 extern crate diesel;
 extern crate dotenv;
 extern crate r2d2;
 extern crate r2d2_diesel;
+#[macro_use]
+extern crate log;
+extern crate pretty_env_logger;
+extern crate hyper;
+extern crate futures;
+extern crate serde_json;
 
 mod schema;
+mod http;
 
 use diesel::prelude::*;
 use diesel::pg::PgConnection;
-use r2d2::Pool;
+use r2d2::{Pool, PooledConnection, Error};
 use r2d2_diesel::ConnectionManager;
 use dotenv::dotenv;
 use std::env;
-
-use mount::Mount;
-use logger::Logger;
-use iron::prelude::*;
-use juniper_iron::{GraphQLHandler, GraphiQLHandler};
-
+use hyper::{Request,Body};
 use juniper::{
-  gql_object, ExecutionResult, Executor, Type, GraphQLObject, FieldResult,
+  gql_object, ExecutionResult, Executor, Type, GraphQLObject, FieldResult, RootNode
 };
 
 use schema::posts;
@@ -51,6 +50,12 @@ struct Context {
   pool: Pool<ConnectionManager<PgConnection>>,
 }
 
+impl Context {
+  fn db(&self) -> Result<PooledConnection<ConnectionManager<PgConnection>>, Error> {
+    self.pool.get()
+  }
+}
+
 struct Query;
 
 #[gql_object]
@@ -68,7 +73,7 @@ impl Query<Context=Context> {
   fn get_posts(executor: &Executor<Context>) -> FieldResult<Vec<Post>> {
     use schema::posts::dsl::*;
 
-    let connection = executor.context().pool.get()?;
+    let connection = executor.context().db()?;
 
     let res = posts.filter(published.eq(true))
         .limit(5)
@@ -85,7 +90,7 @@ impl Mutation<Context=Context> {
   fn create_post(executor: &Executor<Context>, new_post: NewPost) -> FieldResult<Post> {
     use schema::posts::dsl::*;
 
-    let conn = executor.context().pool.get()?;
+    let conn = executor.context().db()?;
 
     let res = diesel::insert_into(posts)
         .values(new_post)
@@ -97,7 +102,7 @@ impl Mutation<Context=Context> {
   fn publish_post(executor: &Executor<Context>, id: i32) -> FieldResult<Post> {
     use schema::posts::dsl::{posts, published};
 
-    let conn = executor.context().pool.get()?;
+    let conn = executor.context().db()?;
 
     let res = diesel::update(posts.find(id))
         .set(published.eq(true))
@@ -107,44 +112,30 @@ impl Mutation<Context=Context> {
   }
 }
 
-pub fn create_connection_pool() -> Pool<ConnectionManager<PgConnection>> {
-  dotenv().ok();
+type Schema<'a> = RootNode<'a, Query, Mutation>;
 
-  let database_url = env::var("DATABASE_URL")
-      .expect("DATABASE_URL must be set");
-
+pub fn create_connection_pool(database_url: String) -> Pool<ConnectionManager<PgConnection>> {
   let manager = ConnectionManager::new(database_url.clone());
 
   Pool::builder().build(manager).expect(&format!("Failed to create connection pool to {}", database_url))
 }
 
 fn main() {
-  let pool = create_connection_pool();
+  dotenv().ok();
+  pretty_env_logger::init();
 
-  let context_factory = move |_: &mut Request| {
+  let database_url = env::var("DATABASE_URL")
+      .expect("DATABASE_URL must be set");
+
+  let pool = create_connection_pool(database_url);
+
+  let context_factory = move |_: &Request<Body>| {
     Context { pool: pool.clone() }
   };
 
-  let mut mount = Mount::new();
-
-  let graphql_endpoint = GraphQLHandler::new(
-    context_factory,
-    Query {},
-    Mutation {},
-  );
-  let graphiql_endpoint = GraphiQLHandler::new("/graphql");
-
-  mount.mount("/", graphiql_endpoint);
-  mount.mount("/graphql", graphql_endpoint);
-
-  let (logger_before, logger_after) = Logger::new(None);
-
-  let mut chain = Chain::new(mount);
-  chain.link_before(logger_before);
-  chain.link_after(logger_after);
-
   let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
   let host = env::var("LISTEN").unwrap_or_else(|_| format!("0.0.0.0:{}", port).to_string());
-  println!("GraphQL server started on {}", host);
-  Iron::new(chain).http(host.as_str()).unwrap();
+
+  let mut apollo = http::Apollo::new(Schema::new(Query {}, Mutation {}), context_factory);
+  apollo.start(Some(&host));
 }
