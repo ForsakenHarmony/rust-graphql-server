@@ -4,9 +4,9 @@ use hyper::{
   self,
   Body, Request, Response, Server, Method, StatusCode,
   rt::Future,
-  service::{Service, service_fn},
+  service::service_fn,
 };
-use futures::{future, IntoFuture, Stream};
+use futures::{future, Stream};
 use serde_json;
 use std::{
   sync::Arc,
@@ -16,7 +16,7 @@ use std::{
 
 #[derive(Debug)]
 enum Error {
-  Hyper(hyper::Error),
+  Hyper(hyper::error::Error),
   Serde(serde_json::Error),
 }
 
@@ -60,26 +60,25 @@ impl<'a, CtxFactory, CtxT, Query, Mutation> Apollo<'a, CtxFactory, CtxT, Query, 
     let host = host.unwrap_or("0.0.0.0:8080").parse().unwrap();
     let apollo = Arc::new(self);
 
-    hyper::rt::run(future::lazy(move || {
-      let new_service = move || {
-        service_fn(move |req| {
-          Arc::clone(&apollo).handle(req)
-        })
-      };
+    let new_service = || {
+      service_fn(|req| {
+        let apollo = Arc::clone(&apollo);
+        apollo.handle(req)
+      })
+    };
 
-      let server = Server::bind(&host)
-          .serve(new_service)
-          .map_err(|e| {
-            error!("server error: {}", e);
-          });
+    let server = Server::bind(&host)
+        .serve(new_service)
+        .map_err(|e| {
+          error!("server error: {}", e);
+        });
 
-      info!("GraphQL server started on http://{}", host);
+    info!("GraphQL server started on http://{}", host);
 
-      server
-    }));
+    hyper::rt::run(server);
   }
 
-  fn handle(&self, req: Request<Body>) -> Box<Future<Item=Response<Body>, Error=Error> + Send> {
+  fn handle(&self, req: Request<Body>) -> Box<Future<Item=Response<Body>, Error=hyper::Error> + Send> {
 //    let (parts, body) = req.into_parts();
     let mut response = Response::new(Body::empty());
 
@@ -88,14 +87,20 @@ impl<'a, CtxFactory, CtxT, Query, Mutation> Apollo<'a, CtxFactory, CtxT, Query, 
         *response.body_mut() = Body::from(playground("/graphql").into());
       }
       (&Method::POST, "/graphql") => {
-        req.body().concat2().and_then(move |b| {
-          let req = serde_json::from_slice::<GraphQLRequest>(b.as_ref()).map_err(Error::Serde)?;
-          let context = (self.context_factory)(&req);
-          let res = req.execute(&self.root_node, &context);
-          let json = serde_json::to_string_pretty(&res).unwrap();
-          Ok(Response::new(Body::from(json.into())))
-        });
-        // we'll be back
+        let gql_res = req
+            .body()
+            .concat2()
+            .map_err(Error::Hyper)
+            .and_then(|b| {
+              let request = serde_json::from_slice::<GraphQLRequest>(b.as_ref()).map_err(Error::Serde)?;
+              let context = (self.context_factory)(&req);
+              let res = request.execute(&self.root_node, &context);
+              let json = serde_json::to_string_pretty(&res).unwrap();
+              Ok(Response::new(Body::from(json.into())))
+            })
+            .then(convert_error);
+
+        return Box::new(gql_res);
       }
       _ => {
         *response.status_mut() = StatusCode::NOT_FOUND;
@@ -103,6 +108,27 @@ impl<'a, CtxFactory, CtxT, Query, Mutation> Apollo<'a, CtxFactory, CtxT, Query, 
     };
 
     Box::new(future::ok(response))
+  }
+}
+
+fn convert_error(res: Result<Response<Body>, Error>) -> Result<Response<Body>, hyper::Error> {
+  match res {
+    Err(err) => {
+      match err {
+        Error::Serde(err) => {
+          let body = format!(r#"{{"status": 500, "description": {}}}"#, err);
+
+          Ok(Response::builder()
+              .status(StatusCode::INTERNAL_SERVER_ERROR)
+              .header("Content-Type", "application/json")
+              .header("Content-Length", body.len())
+              .body(Body::from(body))
+              .unwrap())
+        }
+        Error::Hyper(err) => Err(err),
+      }
+    }
+    Ok(v) => Ok(v),
   }
 }
 
