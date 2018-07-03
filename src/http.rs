@@ -58,13 +58,10 @@ impl<CtxFactory, CtxT, Query, Mutation> Apollo<CtxFactory, CtxT, Query, Mutation
 
   pub fn start(self, host: Option<&str>) {
     let host = host.unwrap_or("0.0.0.0:8080").parse().unwrap();
+    let apollo = Arc::new(self);
 
-    hyper::rt::run(future::lazy(move || {
-      let apollo = Apollo::new(self.root_node, self.context_factory);
-
-      let apollo = Arc::new(apollo);
-
-      let new_service = move || {
+    hyper::rt::run(future::lazy(|| {
+      let new_service = || {
 //        let apollo = Arc::clone(&apollo);
         service_fn(|req| {
           Arc::clone(&apollo).handle(req)
