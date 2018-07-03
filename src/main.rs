@@ -136,6 +136,5 @@ fn main() {
   let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
   let host = env::var("LISTEN").unwrap_or_else(|_| format!("0.0.0.0:{}", port).to_string());
 
-  let mut apollo = http::Apollo::new(Schema::new(Query {}, Mutation {}), context_factory);
-  apollo.start(Some(&host));
+  http::Apollo::new(Schema::new(Query {}, Mutation {}), context_factory).start(Some(&host));
 }

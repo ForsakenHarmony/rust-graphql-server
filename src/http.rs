@@ -31,72 +31,76 @@ impl fmt::Display for Error {
   }
 }
 
-pub struct Apollo<'a, CtxFactory, CtxT, Query, Mutation>
+pub struct Apollo<CtxFactory, CtxT, Query, Mutation>
   where
       CtxFactory: Fn(&Request<Body>) -> CtxT + Send + Sync + 'static,
       CtxT: 'static,
       Query: GraphQLType<Context=CtxT, TypeInfo=()> + Send + Sync + 'static,
       Mutation: GraphQLType<Context=CtxT, TypeInfo=()> + Send + Sync + 'static,
 {
-  root_node: RootNode<'a, Query, Mutation>,
+  root_node: RootNode<'static, Query, Mutation>,
   context_factory: CtxFactory,
 }
 
-impl<'a, CtxFactory, CtxT, Query, Mutation> Apollo<'a, CtxFactory, CtxT, Query, Mutation>
+impl<CtxFactory, CtxT, Query, Mutation> Apollo<CtxFactory, CtxT, Query, Mutation>
   where
       CtxFactory: Fn(&Request<Body>) -> CtxT + Send + Sync + 'static,
       CtxT: 'static,
       Query: GraphQLType<Context=CtxT, TypeInfo=()> + Send + Sync + 'static,
       Mutation: GraphQLType<Context=CtxT, TypeInfo=()> + Send + Sync + 'static,
 {
-  pub fn new(root_node: RootNode<'a, Query, Mutation>, context_factory: CtxFactory) -> Self {
+  pub fn new(root_node: RootNode<'static, Query, Mutation>, context_factory: CtxFactory) -> Self {
     Apollo {
       root_node,
       context_factory,
     }
   }
 
-  pub fn start(mut self, host: Option<&str>) {
+  pub fn start(self, host: Option<&str>) {
     let host = host.unwrap_or("0.0.0.0:8080").parse().unwrap();
-    let apollo = Arc::new(self);
 
-    let new_service = || {
-      service_fn(|req| {
-        let apollo = Arc::clone(&apollo);
-        apollo.handle(req)
-      })
-    };
+    hyper::rt::run(future::lazy(move || {
+      let apollo = Apollo::new(self.root_node, self.context_factory);
 
-    let server = Server::bind(&host)
-        .serve(new_service)
-        .map_err(|e| {
-          error!("server error: {}", e);
-        });
+      let apollo = Arc::new(apollo);
 
-    info!("GraphQL server started on http://{}", host);
+      let new_service = move || {
+//        let apollo = Arc::clone(&apollo);
+        service_fn(|req| {
+          Arc::clone(&apollo).handle(req)
+        })
+      };
 
-    hyper::rt::run(server);
+      let server = Server::bind(&host)
+          .serve(new_service)
+          .map_err(|e| {
+            error!("server error: {}", e);
+          });
+
+      info!("GraphQL server started on http://{}", host);
+
+      server
+    }));
   }
 
-  fn handle(&self, req: Request<Body>) -> Box<Future<Item=Response<Body>, Error=hyper::Error> + Send> {
-//    let (parts, body) = req.into_parts();
+  fn handle(&'static self, req: Request<Body>) -> Box<Future<Item=Response<Body>, Error=hyper::Error> + Send> {
     let mut response = Response::new(Body::empty());
 
     match (req.method(), req.uri().path()) {
       (&Method::GET, "/") => {
-        *response.body_mut() = Body::from(playground("/graphql").into());
+        *response.body_mut() = Body::from(playground("/graphql"));
       }
       (&Method::POST, "/graphql") => {
         let gql_res = req
             .body()
             .concat2()
             .map_err(Error::Hyper)
-            .and_then(|b| {
+            .and_then(move |b| {
               let request = serde_json::from_slice::<GraphQLRequest>(b.as_ref()).map_err(Error::Serde)?;
               let context = (self.context_factory)(&req);
               let res = request.execute(&self.root_node, &context);
               let json = serde_json::to_string_pretty(&res).unwrap();
-              Ok(Response::new(Body::from(json.into())))
+              Ok(Response::new(Body::from(json)))
             })
             .then(convert_error);
 
