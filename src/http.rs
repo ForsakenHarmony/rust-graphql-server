@@ -62,9 +62,8 @@ impl<CtxFactory, CtxT, Query, Mutation> Apollo<CtxFactory, CtxT, Query, Mutation
 
     hyper::rt::run(future::lazy(|| {
       let new_service = || {
-//        let apollo = Arc::clone(&apollo);
         service_fn(|req| {
-          Arc::clone(&apollo).handle(req)
+          handle(Arc::new(req), Arc::clone(&apollo))
         })
       };
 
@@ -79,37 +78,42 @@ impl<CtxFactory, CtxT, Query, Mutation> Apollo<CtxFactory, CtxT, Query, Mutation
       server
     }));
   }
+}
 
-  fn handle(&'static self, req: Request<Body>) -> Box<Future<Item=Response<Body>, Error=hyper::Error> + Send> {
-    let mut response = Response::new(Body::empty());
+fn handle<CtxFactory, CtxT, Query, Mutation>(req: Arc<Request<Body>>, apollo: Arc<Apollo<CtxFactory, CtxT, Query, Mutation>>) -> Box<Future<Item=Response<Body>, Error=hyper::Error> + Send>
+  where
+      CtxFactory: Fn(&Request<Body>) -> CtxT + Send + Sync + 'static,
+      CtxT: 'static,
+      Query: GraphQLType<Context=CtxT, TypeInfo=()> + Send + Sync + 'static,
+      Mutation: GraphQLType<Context=CtxT, TypeInfo=()> + Send + Sync + 'static, {
+  let mut response = Response::new(Body::empty());
 
-    match (req.method(), req.uri().path()) {
-      (&Method::GET, "/") => {
-        *response.body_mut() = Body::from(playground("/graphql"));
-      }
-      (&Method::POST, "/graphql") => {
-        let gql_res = req
-            .body()
-            .concat2()
-            .map_err(Error::Hyper)
-            .and_then(move |b| {
-              let request = serde_json::from_slice::<GraphQLRequest>(b.as_ref()).map_err(Error::Serde)?;
-              let context = (self.context_factory)(&req);
-              let res = request.execute(&self.root_node, &context);
-              let json = serde_json::to_string_pretty(&res).unwrap();
-              Ok(Response::new(Body::from(json)))
-            })
-            .then(convert_error);
+  match (req.method(), req.uri().path()) {
+    (&Method::GET, "/") => {
+      *response.body_mut() = Body::from(playground("/graphql"));
+    }
+    (&Method::POST, "/graphql") => {
+      let gql_res = req
+          .body()
+          .concat2()
+          .map_err(Error::Hyper)
+          .and_then(move |b| {
+            let request = serde_json::from_slice::<GraphQLRequest>(b.as_ref()).map_err(Error::Serde)?;
+            let context = (apollo.context_factory)(&req);
+            let res = request.execute(&apollo.root_node, &context);
+            let json = serde_json::to_string_pretty(&res).unwrap();
+            Ok(Response::new(Body::from(json)))
+          })
+          .then(convert_error);
 
-        return Box::new(gql_res);
-      }
-      _ => {
-        *response.status_mut() = StatusCode::NOT_FOUND;
-      }
-    };
+      return Box::new(gql_res);
+    }
+    _ => {
+      *response.status_mut() = StatusCode::NOT_FOUND;
+    }
+  };
 
-    Box::new(future::ok(response))
-  }
+  Box::new(future::ok(response))
 }
 
 fn convert_error(res: Result<Response<Body>, Error>) -> Result<Response<Body>, hyper::Error> {
